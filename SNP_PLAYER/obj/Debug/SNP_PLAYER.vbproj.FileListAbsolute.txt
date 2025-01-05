@@ -1,0 +1,11 @@
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\bin\Debug\SNP_PLAYER.exe.config
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\bin\Debug\SNP_PLAYER.exe
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\bin\Debug\SNP_PLAYER.pdb
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\bin\Debug\SNP_PLAYER.xml
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.vbprojResolveAssemblyReference.cache
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.Form1.resources
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.Resources.resources
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.vbproj.GenerateResource.Cache
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.exe
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.xml
+c:\users\rosa\documents\visual studio 2015\Projects\SNP_PLAYER\SNP_PLAYER\obj\Debug\SNP_PLAYER.pdb
