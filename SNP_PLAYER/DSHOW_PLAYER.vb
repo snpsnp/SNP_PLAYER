@@ -1,24 +1,12 @@
 ﻿Imports System.Runtime.InteropServices
-
-Public Enum ESTADO
-    ABIERTO
-    CERRADO
-    REPRODUCIENDO
-    PAUSADO
-    DETENIDO
-    SEEKING
-End Enum
-
-Public Enum GET_PIN_TYPE
-    PT_NAME
-    PT_NUMBER
-End Enum
+Imports SNP_PLAYER.ENUMS
 
 Public Class DSHOW_PLAYER
     Private mFG As DirectShowLib.IFilterGraph2
 
     Private bHasAudio As Boolean = False
     Private bHasVideo As Boolean = False
+    Private bRenderUsingIC As Boolean = False
 
     'MEDIA MANIPULATION INTERFACES, TO BE RETRIEVED FROM THE FILTERGRAPH
     Private mMedia As DirectShowLib.IMediaControl
@@ -58,6 +46,11 @@ Public Class DSHOW_PLAYER
     'WINDOW THAT WILL HOLD (IF THERE IS ANY) THE VIDEO TO BE PLAYED
     Private mVideoWindowHandle As IntPtr = IntPtr.Zero
 
+    'FIELD TO HOLD THE CURRENT TIME FORMAT 
+    Private mTimeFormat As ENUMS.TIME_FORMAT
+
+    'FIELD TO HOLD CURRENT STREAM STATE
+    Private mState As ENUMS.ESTADO
 
 #Region "WINAPI"
     <DllImport("user32.dll", CharSet:=CharSet.Auto, SetLastError:=True, ExactSpelling:=True)>
@@ -71,9 +64,166 @@ Public Class DSHOW_PLAYER
             Return Me.mVideoWindowHandle
         End Get
         Set(value As IntPtr)
-            If Not IsWindow(value) Then Throw New ArgumentException("the specified handle does not correspond to a vaid window")
+            If Not IsWindow(value) Then Throw New ArgumentException("the specified handle does not correspond to a valid window")
 
             Me.mVideoWindowHandle = value
+        End Set
+    End Property
+
+    Public Property Volume() As Long
+        Get
+            If Me.mSound Is Nothing Then
+                Throw New InvalidOperationException("IBasicAudio is not available.")
+            End If
+
+            ' Retrieve the volume in dB from DirectShow
+            Dim dBVolume As Integer
+            Me.mSound.get_Volume(dBVolume)
+
+            ' Convert dBVolume (-10000 to 0) back to linear scale (0 to 100)
+            Dim mVolume As Integer
+            If dBVolume <= -10000 Then
+                ' Completely silent
+                mVolume = 0
+            Else
+                ' Inverse of logarithmic scaling
+                mVolume = CInt(Math.Pow(10, dBVolume / 2000.0) * 100)
+            End If
+
+            Return mVolume
+        End Get
+
+        Set(value As Long)
+            If Me.mSound Is Nothing Then
+                Throw New InvalidOperationException("IBasicAudio is not available.")
+            End If
+
+            If value < 0 OrElse value > 100 Then
+                Throw New ArgumentOutOfRangeException(NameOf(value), "Volume must be between 0 and 100.")
+            End If
+
+            ' Convert linear slider value to logarithmic dB scale
+            Dim scaledVolume As Integer
+            If value = 0 Then
+                ' Completely silent
+                scaledVolume = -10000
+            Else
+                ' Logarithmic scaling: Maps 1-100 to -10000 to 0 dB
+                scaledVolume = CInt(2000.0 * Math.Log10(value / 100.0))
+            End If
+
+            Me.mSound.put_Volume(scaledVolume)
+        End Set
+    End Property
+
+    Public Property Balance() As Integer
+        Get
+            If Me.mSound Is Nothing Then Throw New InvalidOperationException("IBasicAudio is not available")
+
+            Dim mBal As Integer
+            Me.mSound.get_Balance(mBal)
+            Return mBal / 100
+
+        End Get
+        Set(value As Integer)
+            If Me.mSound Is Nothing Then Throw New InvalidOperationException("IBasicAudio is not available")
+
+            ' Validate the input value to ensure it is within the range [-100, 100]
+            If value < -100 OrElse value > 100 Then
+                Throw New ArgumentOutOfRangeException(NameOf(value), "Balance must be between -100 and 100.")
+            End If
+
+            Me.mSound.put_Balance(value * 100)
+        End Set
+    End Property
+
+    Public Property TimeFormat() As ENUMS.TIME_FORMAT
+        Get
+            Return Me.mTimeFormat
+        End Get
+        Set(value As ENUMS.TIME_FORMAT)
+            If Me.mSeek Is Nothing Then Throw New InvalidOperationException("IMediaSeeking is not set")
+            Select Case value
+                Case ENUMS.TIME_FORMAT.TF_FRAMES
+                    If Me.mSeek.IsFormatSupported(DirectShowLib.TimeFormat.Frame) Then
+                        Me.mSeek.SetTimeFormat(DirectShowLib.TimeFormat.Frame)
+                    Else
+                        Throw New ArgumentException("Time Format not supported")
+                    End If
+                Case TIME_FORMAT.TF_MEDIATIME
+                Case TIME_FORMAT.TF_MILLISECONDS
+                Case TIME_FORMAT.TF_SECONDS
+                    If Me.mSeek.IsFormatSupported(DirectShowLib.TimeFormat.MediaTime) Then
+                        Me.mSeek.SetTimeFormat(DirectShowLib.TimeFormat.MediaTime)
+                    Else
+                        Throw New ArgumentException("Time Format not supported")
+                    End If
+                Case TIME_FORMAT.TF_SAMPLES
+                    If Me.mSeek.IsFormatSupported(DirectShowLib.TimeFormat.Sample) Then
+                        Me.mSeek.SetTimeFormat(DirectShowLib.TimeFormat.Sample)
+                    Else
+                        Throw New ArgumentException("Time Format not supported")
+                    End If
+            End Select
+            Me.mTimeFormat = value
+        End Set
+    End Property
+
+    Public ReadOnly Property Duration() As Long
+        Get
+            If Me.mSeek Is Nothing Then Throw New InvalidOperationException("IMediaSeeking is not set")
+
+            Dim mDuration As Long
+            Me.mSeek.GetDuration(mDuration)
+
+            If Me.mTimeFormat = TIME_FORMAT.TF_MILLISECONDS Then
+                mDuration /= 10000
+            End If
+
+            If Me.mTimeFormat = TIME_FORMAT.TF_SECONDS Then
+                mDuration /= 10000 / 1000
+            End If
+
+            Return mDuration
+        End Get
+    End Property
+
+    Public Property Position() As Long
+        Get
+            Dim mPosition As Long, mStop As Long
+            If Me.mSeek Is Nothing Then Throw New InvalidOperationException("IMediaSeeking is not set")
+
+            Me.mSeek.GetPositions(mPosition, mStop)
+
+            If Me.mTimeFormat = TIME_FORMAT.TF_MILLISECONDS Then mPosition /= 10000
+            If Me.mTimeFormat = TIME_FORMAT.TF_SECONDS Then mPosition /= 10000 / 1000
+
+            Return mPosition
+        End Get
+        Set(value As Long)
+            If Me.mSeek Is Nothing Then Throw New InvalidOperationException("IMediaSeeking is not set")
+
+            Dim mPosition As Long
+
+            If mTimeFormat = TIME_FORMAT.TF_MILLISECONDS Then
+                mPosition = value * 10000
+            ElseIf mTimeFormat = TIME_FORMAT.TF_SECONDS Then
+                mPosition = value * 10000 * 1000
+            Else
+                mPosition = value
+            End If
+
+            Me.mSeek.SetPositions(mPosition, DirectShowLib.AMSeekingSeekingFlags.AbsolutePositioning, 0, DirectShowLib.AMSeekingSeekingFlags.NoPositioning)
+
+        End Set
+    End Property
+
+    Public Property UseIntelligentConnect() As Boolean
+        Get
+            Return Me.bRenderUsingIC
+        End Get
+        Set(value As Boolean)
+            Me.bRenderUsingIC = value
         End Set
     End Property
 #End Region
@@ -81,14 +231,57 @@ Public Class DSHOW_PLAYER
     'CONSTRUCTORS
 
     Public Sub New(ByVal szFileName As String)
+        Me.SetFiltersToNothing()
+        Me.SetInterfacesToNothing()
+        Me.SetVMRInterfacesToNothing()
+
         If System.IO.File.Exists(szFileName) Then
             Me.mFileName = szFileName
+            Me.Open()
         Else
             Throw New System.IO.FileNotFoundException("No se puede encontrar el archivo especificado", szFileName)
         End If
     End Sub
 
-    Public Function CreateCustomFG() As Boolean
+    Public Sub New()
+        Me.SetFiltersToNothing()
+        Me.SetInterfacesToNothing()
+        Me.SetVMRInterfacesToNothing()
+    End Sub
+
+    Public Function Open() As Boolean
+
+        'try to open a file creating a custom filter graph 
+        If Me.CreateCustomFG() Then
+            'graph creation succeded, we query all the necessary interfaces
+            Me.mMedia = DirectCast(Me.mFG, DirectShowLib.IMediaControl)
+            If bHasAudio Then Me.mSound = DirectCast(Me.mFG, DirectShowLib.IBasicAudio)
+            If bHasVideo Then Me.mVideo = DirectCast(Me.mFG, DirectShowLib.IBasicVideo)
+            Me.mEvent = DirectCast(Me.mFG, DirectShowLib.IMediaEventEx)
+            Me.mSeek = DirectCast(Me.mFG, DirectShowLib.IMediaSeeking)
+            'set the stream state to open
+            Me.mState = ESTADO.ABIERTO
+            'return succesfully
+            Return True
+
+        Else
+            'failed to open the stream, release and re-set all the interfaces and filter objects
+            Me.SafeReleaseVMRInterfaces()
+            Me.SafeReleaseInterfaces()
+            Me.SafeReleaseFilters()
+            Me.SetInterfacesToNothing()
+            Me.SetVMRInterfacesToNothing()
+            Me.SetFiltersToNothing()
+            'return error!
+            Return False
+        End If
+
+    End Function
+
+
+#Region "METODOS_PRIVADOS"
+
+    Private Function CreateCustomFG() As Boolean
         'file source filter only output pin
         Dim FileSourceOutputPin As DirectShowLib.IPin = Nothing
 
@@ -112,8 +305,6 @@ Public Class DSHOW_PLAYER
         Dim VMR9InputPin As DirectShowLib.IPin = Nothing
 
         Try
-
-
             If Not System.IO.File.Exists(Me.mFileName) Then Return False
 
             Me.GetFilterPointer("E436EBB5-524F-11CE-9F53-0020AF0BA770", Me.mSourceFilter)
@@ -196,7 +387,10 @@ Public Class DSHOW_PLAYER
 
         Catch ex As Exception
             'error, limpiamos todo
+            Me.SafeReleaseFilters()
             Me.SetFiltersToNothing()
+            Me.SafeReleaseVMRInterfaces()
+            Me.SetVMRInterfacesToNothing()
             Return False
 
         Finally
@@ -213,13 +407,14 @@ Public Class DSHOW_PLAYER
             If Not VMR9InputPin Is Nothing Then Marshal.ReleaseComObject(VMR9InputPin)
         End Try
 
-
 SafeRelease:
-
+        Me.SafeReleaseFilters()
+        Me.SetFiltersToNothing()
+        Me.SafeReleaseVMRInterfaces()
+        Me.SetVMRInterfacesToNothing()
+        Return False
     End Function
 
-
-#Region "METODOS_PRIVADOS"
     Private Function GetFilterPointer(ByVal filterCLSiD As String, ByRef Filter As DirectShowLib.IBaseFilter) As Boolean
         Try
             Dim _guid As New Guid(filterCLSiD)
@@ -265,19 +460,29 @@ SafeRelease:
         DirectShowLib.DsError.ThrowExceptionForHR(filter.EnumPins(pinEnumerator))
 
         Try
+            Dim pinIndex As Integer = 0
+
             While pinEnumerator.Next(1, pinArray, IntPtr.Zero) = 0 ' S_OK
                 Dim currentPin As DirectShowLib.IPin = pinArray(0)
 
                 Try
-                    ' Check pin based on the criteria
-                    If TypeOf searchCriteria Is String Then
-                        currentPin.QueryPinInfo(pinInfo)
+                    currentPin.QueryPinInfo(pinInfo)
 
-                        ' If the pin matches the search criteria, return it to the caller
-                        If pinInfo.name = CType(searchCriteria, String) Then
-                            Return currentPin
-                        End If
-                    End If
+                    Select Case searchType
+                        Case GET_PIN_TYPE.PT_NAME
+                            ' Check pin based on name
+                            If pinInfo.name = CType(searchCriteria, String) Then
+                                Return currentPin
+                            End If
+
+                        Case GET_PIN_TYPE.PT_NUMBER
+                            ' Check pin based on number
+                            If pinIndex = CType(searchCriteria, Integer) Then
+                                Return currentPin
+                            End If
+                            pinIndex += 1
+
+                    End Select
 
                 Catch ex As Exception
                     ' If QueryPinInfo fails, release the pin immediately to avoid memory leaks
@@ -305,7 +510,7 @@ SafeRelease:
 
         Finally
             ' Clean up the enumerator if needed
-            If pinEnumerator IsNot Nothing Then Marshal.FinalReleaseComObject(pinEnumerator)
+            If Not pinEnumerator Is Nothing Then Marshal.FinalReleaseComObject(pinEnumerator)
         End Try
     End Function
 
@@ -382,13 +587,52 @@ SafeRelease:
 
     End Function
 
-    Private Sub SetFiltersToNothing()
+    Private Sub SafeReleaseInterfaces()
+        If Not Me.mMedia Is Nothing Then Marshal.ReleaseComObject(Me.mMedia)
+        If Not Me.mSound Is Nothing Then Marshal.ReleaseComObject(Me.mSound)
+        If Not Me.mVideo Is Nothing Then Marshal.ReleaseComObject(Me.mVideo)
+        If Not Me.mEvent Is Nothing Then Marshal.ReleaseComObject(Me.mEvent)
+        If Not Me.mSeek Is Nothing Then Marshal.ReleaseComObject(Me.mSeek)
+    End Sub
+
+    Private Sub SetInterfacesToNothing()
+        Me.mMedia = Nothing
+        Me.mSound = Nothing
+        Me.mVideo = Nothing
+        Me.mEvent = Nothing
+        Me.mSeek = Nothing
+    End Sub
+
+    Private Sub SafeReleaseVMRInterfaces()
+        If Not Me.mWindowlessControl Is Nothing Then Marshal.ReleaseComObject(Me.mWindowlessControl)
+        If Not Me.mVMRStreamControl Is Nothing Then Marshal.ReleaseComObject(Me.mVMRStreamControl)
+        If Not Me.mVMRSurfaceAlloc Is Nothing Then Marshal.ReleaseComObject(Me.mVMRSurfaceAlloc)
+        If Not Me.mVMRSurfaceAllocNotify Is Nothing Then Marshal.ReleaseComObject(Me.mVMRSurfaceAllocNotify)
+    End Sub
+
+    Private Sub SetVMRInterfacesToNothing()
+        Me.mWindowlessControl = Nothing
+        Me.mVMRStreamControl = Nothing
+        Me.mVMRSurfaceAlloc = Nothing
+        Me.mVMRSurfaceAllocNotify = Nothing
+    End Sub
+
+    Private Sub SafeReleaseFilters()
         If Not Me.mSourceFilter Is Nothing Then Marshal.ReleaseComObject(Me.mSourceFilter)
         If Not Me.mLAV_Splitter Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Splitter)
         If Not Me.mLAV_Audio Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Audio)
         If Not Me.mLAV_Video Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Video)
         If Not Me.mAudioRenderer Is Nothing Then Marshal.ReleaseComObject(Me.mAudioRenderer)
         If Not Me.mVideoRenderer Is Nothing Then Marshal.ReleaseComObject(Me.mVideoRenderer)
+    End Sub
+
+    Private Sub SetFiltersToNothing()
+        Me.mSourceFilter = Nothing
+        Me.mLAV_Splitter = Nothing
+        Me.mLAV_Audio = Nothing
+        Me.mLAV_Video = Nothing
+        Me.mAudioRenderer = Nothing
+        Me.mVideoRenderer = Nothing
     End Sub
 #End Region
 
