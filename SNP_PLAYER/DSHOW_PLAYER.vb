@@ -195,7 +195,8 @@ Public Class DSHOW_PLAYER
             Return True
 
         Catch ex As Exception
-
+            'error, limpiamos todo
+            Me.SetFiltersToNothing()
             Return False
 
         Finally
