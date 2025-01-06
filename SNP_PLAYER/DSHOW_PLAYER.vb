@@ -1,7 +1,10 @@
 ﻿Imports System.Runtime.InteropServices
 Imports SNP_PLAYER.ENUMS
+Imports DirectShowLib
 
 Public Class DSHOW_PLAYER
+    Implements IDisposable
+
     Private mFG As DirectShowLib.IFilterGraph2
 
     Private bHasAudio As Boolean = False
@@ -14,9 +17,10 @@ Public Class DSHOW_PLAYER
     Private mVideo As DirectShowLib.IBasicVideo
     Private mEvent As DirectShowLib.IMediaEventEx
     Private mSeek As DirectShowLib.IMediaSeeking
+    Private mROTEntry As DirectShowLib.DsROTEntry
 
     'SOURCE FILTER OBJECT
-    Private mSourceFilter As DirectShowLib.IFileSourceFilter
+    Private mSourceFilter As DirectShowLib.IBaseFilter
 
     'LAV SPLITTER FILTER OBJECT
     Private mLAV_Splitter As DirectShowLib.IBaseFilter
@@ -55,6 +59,14 @@ Public Class DSHOW_PLAYER
 #Region "WINAPI"
     <DllImport("user32.dll", CharSet:=CharSet.Auto, SetLastError:=True, ExactSpelling:=True)>
     Private Shared Function IsWindow(ByVal hWnd As IntPtr) As <MarshalAs(UnmanagedType.Bool)> Boolean
+    End Function
+
+    <DllImport("ole32.dll")>
+    Private Shared Function GetRunningObjectTable(ByVal reserved As UInteger, ByRef pprot As UCOMIRunningObjectTable) As Integer
+    End Function
+
+    <DllImport("ole32.dll")>
+    Private Shared Function CreateItemMoniker(ByVal lpszDelim As String, ByVal lpszItem As String, ByRef ppmk As UCOMIMoniker) As Integer
     End Function
 #End Region
 
@@ -226,6 +238,16 @@ Public Class DSHOW_PLAYER
             Me.bRenderUsingIC = value
         End Set
     End Property
+
+    Public Property FileName() As String
+        Get
+            Return Me.mFileName
+        End Get
+        Set(value As String)
+            If Not System.IO.File.Exists(value) Then Throw New ArgumentException("the specified file can not be accessed")
+            Me.mFileName = value
+        End Set
+    End Property
 #End Region
 
     'CONSTRUCTORS
@@ -249,10 +271,32 @@ Public Class DSHOW_PLAYER
         Me.SetVMRInterfacesToNothing()
     End Sub
 
+    Public Sub Play()
+        If Me.mMedia Is Nothing Then Throw New InvalidOperationException("IMediaControl is not set")
+        Me.mMedia.Run()
+        Me.mState = ESTADO.REPRODUCIENDO
+    End Sub
+
+    Public Sub Pause()
+        If Me.mMedia Is Nothing Then Throw New InvalidOperationException("IMediaControl is not set")
+        Me.mMedia.Pause()
+        Me.mState = ESTADO.PAUSADO
+    End Sub
+
+    Public Sub [Stop]()
+        If Me.mMedia Is Nothing Then Throw New InvalidOperationException("IMediaControl is not set")
+        Me.mMedia.Stop()
+        Position = 0
+        Me.mState = ESTADO.DETENIDO
+    End Sub
+
     Public Function Open() As Boolean
 
         'try to open a file creating a custom filter graph 
         If Me.CreateCustomFG() Then
+
+            Me.mROTEntry = New DsROTEntry(Me.mFG)
+
             'graph creation succeded, we query all the necessary interfaces
             Me.mMedia = DirectCast(Me.mFG, DirectShowLib.IMediaControl)
             If bHasAudio Then Me.mSound = DirectCast(Me.mFG, DirectShowLib.IBasicAudio)
@@ -266,6 +310,7 @@ Public Class DSHOW_PLAYER
 
         Else
             'failed to open the stream, release and re-set all the interfaces and filter objects
+
             Me.SafeReleaseVMRInterfaces()
             Me.SafeReleaseInterfaces()
             Me.SafeReleaseFilters()
@@ -278,7 +323,15 @@ Public Class DSHOW_PLAYER
 
     End Function
 
-
+    Public Sub Close()
+        Me.Stop()
+        Me.SafeReleaseVMRInterfaces()
+        Me.SafeReleaseInterfaces()
+        Me.SafeReleaseFilters()
+        Me.SetInterfacesToNothing()
+        Me.SetVMRInterfacesToNothing()
+        Me.SetFiltersToNothing()
+    End Sub
 #Region "METODOS_PRIVADOS"
 
     Private Function CreateCustomFG() As Boolean
@@ -307,11 +360,17 @@ Public Class DSHOW_PLAYER
         Try
             If Not System.IO.File.Exists(Me.mFileName) Then Return False
 
+            Me.mFG = DirectCast(New DirectShowLib.FilterGraph, DirectShowLib.IFilterGraph2)
+
             Me.GetFilterPointer("E436EBB5-524F-11CE-9F53-0020AF0BA770", Me.mSourceFilter)
+
             Me.GetFilterPointer("171252A0-8820-4AFE-9DF8-5C92B2D66B04", Me.mLAV_Splitter)
 
             Me.AddCustomFilter(Me.mSourceFilter, "File Source (Async.)", True, Me.mFileName)
+
             Me.AddCustomFilter(Me.mLAV_Splitter, "LAV Splitter", False)
+
+            Me.mSourceFilter.FindPin("Output", FileSourceOutputPin)
 
             FileSourceOutputPin = Me.GetPin(Me.mSourceFilter, GET_PIN_TYPE.PT_NAME, "Output")
             LAVSplitterInputPin = Me.GetPin(Me.mLAV_Splitter, GET_PIN_TYPE.PT_NAME, "Input")
@@ -437,11 +496,11 @@ SafeRelease:
         End Try
     End Function
 
-    Private Function AddCustomFilter(ByVal iFilter As DirectShowLib.IBaseFilter, ByVal FriendlyName As String, ByVal bIsSource As Boolean, Optional ByVal szFile As String = "") As Boolean
+    Private Function AddCustomFilter(ByRef iFilter As DirectShowLib.IBaseFilter, ByVal FriendlyName As String, ByVal bIsSource As Boolean, Optional ByVal szFile As String = "") As Boolean
         If iFilter Is Nothing Then Return False
 
         If bIsSource Then
-            DirectShowLib.DsError.ThrowExceptionForHR(Me.mFG.AddSourceFilter(mFileName, FriendlyName, iFilter))
+            DirectShowLib.DsError.ThrowExceptionForHR(Me.mFG.AddSourceFilter(szFile, FriendlyName, iFilter))
         Else
             DirectShowLib.DsError.ThrowExceptionForHR(Me.mFG.AddFilter(iFilter, FriendlyName))
         End If
@@ -449,7 +508,7 @@ SafeRelease:
         Return True
     End Function
 
-    Private Function GetPin(ByVal filter As DirectShowLib.IBaseFilter, ByVal searchType As GET_PIN_TYPE, ByVal searchCriteria As Object) As DirectShowLib.IPin
+    Private Function GetPin(ByRef filter As DirectShowLib.IBaseFilter, ByVal searchType As GET_PIN_TYPE, ByVal searchCriteria As Object) As DirectShowLib.IPin
         If filter Is Nothing Then Throw New ArgumentNullException(NameOf(filter), "The filter must be specified.")
 
         Dim pinArray(0) As DirectShowLib.IPin
@@ -463,22 +522,22 @@ SafeRelease:
             Dim pinIndex As Integer = 0
 
             While pinEnumerator.Next(1, pinArray, IntPtr.Zero) = 0 ' S_OK
-                Dim currentPin As DirectShowLib.IPin = pinArray(0)
+                'Dim currentPin As DirectShowLib.IPin = pinArray(0)
 
                 Try
-                    currentPin.QueryPinInfo(pinInfo)
+                    DirectShowLib.DsError.ThrowExceptionForHR(pinArray(0).QueryPinInfo(pinInfo))
 
                     Select Case searchType
                         Case GET_PIN_TYPE.PT_NAME
                             ' Check pin based on name
                             If pinInfo.name = CType(searchCriteria, String) Then
-                                Return currentPin
+                                Return pinArray(0)
                             End If
 
                         Case GET_PIN_TYPE.PT_NUMBER
                             ' Check pin based on number
                             If pinIndex = CType(searchCriteria, Integer) Then
-                                Return currentPin
+                                Return pinArray(0)
                             End If
                             pinIndex += 1
 
@@ -486,18 +545,18 @@ SafeRelease:
 
                 Catch ex As Exception
                     ' If QueryPinInfo fails, release the pin immediately to avoid memory leaks
-                    Marshal.ReleaseComObject(currentPin)
+                    Marshal.ReleaseComObject(pinArray(0))
                     ' Optionally log the exception here
                 Finally
                     ' Always release pinInfo.filter to avoid memory leaks
-                    If pinInfo.filter IsNot Nothing Then
-                        Marshal.FinalReleaseComObject(pinInfo.filter)
-                        pinInfo.filter = Nothing
-                    End If
+                    'If pinInfo Is Nothing Then
+                    DsUtils.FreePinInfo(pinInfo)
+                    '    pinInfo = Nothing
+                    'End If
                 End Try
 
                 ' If pin is not needed, release it here to avoid memory leaks
-                Marshal.ReleaseComObject(currentPin)
+                Marshal.ReleaseComObject(pinArray(0))
 
             End While
 
@@ -618,12 +677,17 @@ SafeRelease:
     End Sub
 
     Private Sub SafeReleaseFilters()
+        If Me.mROTEntry IsNot Nothing Then Me.mROTEntry.Dispose()
+
         If Not Me.mSourceFilter Is Nothing Then Marshal.ReleaseComObject(Me.mSourceFilter)
         If Not Me.mLAV_Splitter Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Splitter)
         If Not Me.mLAV_Audio Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Audio)
         If Not Me.mLAV_Video Is Nothing Then Marshal.ReleaseComObject(Me.mLAV_Video)
         If Not Me.mAudioRenderer Is Nothing Then Marshal.ReleaseComObject(Me.mAudioRenderer)
         If Not Me.mVideoRenderer Is Nothing Then Marshal.ReleaseComObject(Me.mVideoRenderer)
+        If Not Me.mROTEntry Is Nothing Then Me.mROTEntry.Dispose()
+
+        If Not Me.mFG Is Nothing Then Marshal.ReleaseComObject(Me.mFG)
     End Sub
 
     Private Sub SetFiltersToNothing()
@@ -631,9 +695,44 @@ SafeRelease:
         Me.mLAV_Splitter = Nothing
         Me.mLAV_Audio = Nothing
         Me.mLAV_Video = Nothing
+        Me.mROTEntry = Nothing
         Me.mAudioRenderer = Nothing
         Me.mVideoRenderer = Nothing
+        mFG = Nothing
     End Sub
+
+#Region "IDisposable Support"
+    Private disposedValue As Boolean ' To detect redundant calls
+
+    ' IDisposable
+    Protected Overridable Sub Dispose(disposing As Boolean)
+        If Not disposedValue Then
+            If disposing Then
+                ' TODO: dispose managed state (managed objects).
+            End If
+
+            Me.Close()
+            ' TODO: free unmanaged resources (unmanaged objects) and override Finalize() below.
+            ' TODO: set large fields to null.
+        End If
+        disposedValue = True
+    End Sub
+
+    ' TODO: override Finalize() only if Dispose(disposing As Boolean) above has code to free unmanaged resources.
+    Protected Overrides Sub Finalize()
+        ' Do not change this code.  Put cleanup code in Dispose(disposing As Boolean) above.
+        Dispose(False)
+        MyBase.Finalize()
+    End Sub
+
+    ' This code added by Visual Basic to correctly implement the disposable pattern.
+    Public Sub Dispose() Implements IDisposable.Dispose
+        ' Do not change this code.  Put cleanup code in Dispose(disposing As Boolean) above.
+        Dispose(True)
+        ' TODO: uncomment the following line if Finalize() is overridden above.
+        ' GC.SuppressFinalize(Me)
+    End Sub
+#End Region
 #End Region
 
 End Class
